@@ -1,0 +1,12 @@
+#!/bin/bash
+#liblicense.so
+#gcc -fPIC -c -g my_list.c
+#gcc -fPIC -c -g asd.c my_list.h -I$CNSROOT/external/flexNet/include -I ./libev-4.15/include/ -lev
+#gcc -shared -o liblicense.so my_list.o asd.o
+
+
+
+
+gcc   -fPIC -g -c -W my_list.c
+gcc   -fPIC -g -c  -W asd.c my_list.h -I$CNSROOT/external/flexNet/include -I ./libev-4.15/include/ -lev
+g++ -shared  -W -o liblicense.so my_list.o asd.o

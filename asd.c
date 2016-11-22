@@ -1,0 +1,365 @@
+#include "my_list.h"
+#include "lmclient.h"
+#include "lm_attr.h"
+#include "asd.h"
+#include <stdio.h>
+#include "ev.h"
+struct LicenseItem *m_pItem = NULL;
+void *m_pFlexHandle;
+void init_flexible(){
+	m_pFlexHandle = NULL;
+	int l_iRc = 0;
+	char l_zOk = 1;//true
+	struct flexinit_property_handle *l_pFlexHandle;
+	l_iRc = lc_flexinit_property_handle_create(&l_pFlexHandle);
+	if (0 != l_iRc)
+	{
+		l_zOk = !l_zOk;//false
+		printf("lc_flexinit_property_handle_create() failed: %d\n", l_iRc);
+	}
+	if (l_zOk)
+	{
+		l_iRc = lc_flexinit_property_handle_set(l_pFlexHandle,
+				(FLEXINIT_PROPERTY_TYPE)FLEXINIT_PROPERTY_USE_TRUSTED_STORAGE,
+				(FLEXINIT_VALUE_TYPE)1
+				);
+		if (0 != l_iRc)
+		{
+			l_zOk = !l_zOk;//false
+			printf("lc_flexinit_property_handle_set failed: %d\n", l_iRc);
+		}
+	}
+	if (l_zOk)
+	{
+		l_iRc = lc_flexinit(l_pFlexHandle);
+		if (0 != l_iRc)
+		{
+			l_zOk = !l_zOk;//false
+			printf("lc_flexinit failed: %d\n",l_iRc);
+		}
+	}
+	if (l_zOk)
+	{
+		m_pFlexHandle = l_pFlexHandle;
+		printf("Initialized FLEX-LM Client\n");
+	}
+}
+void exit_flexible()
+{
+	/*													//0517这个应该加上
+														struct LicenseItem *l_pFeature = select_list();//重新写一个函数遍历整个链表,需要实现遍历一个节点release一个结点
+														if (l_pFeature) {
+														release_1(*l_pFeature,true);
+														}
+														free_list();
+														*/
+
+	if (m_pFlexHandle)
+	{
+		struct flexinit_property_handle *l_pFlexHandle = 
+			(struct flexinit_property_handle *)m_pFlexHandle;
+		lc_flexinit_cleanup(l_pFlexHandle);
+		lc_flexinit_property_handle_free(l_pFlexHandle);
+	}
+}
+char acquire(const char *p_pcFeature,
+		int			p_iNumLicenses,
+		const char  *p_pcVersion,
+		char 		p_zTerminateOnFail,
+		char 		p_zSilent)
+{
+	char 		l_zOk = 1;//true
+	char 		l_zEntryAlreadyExists = 0;
+	char 		l_Key[40] = {0};
+	VENDORCODE  l_VendorCode;
+	LM_HANDLE   *l_pLMJob = 0;
+	char 		l_zNeedToAcquire = 1;//true
+	CONFIG 		*l_pLMCfg = 0;
+	int 		l_iDaysRemaining = 0;
+	char 		l_zCreateJob = 1;//true
+	struct LicenseItem *l_pFeature = NULL;
+
+	if (!p_pcFeature || !p_pcVersion) {
+		printf("Can't acquire license: Feature/Version not specified\n");
+		l_zOk = !l_zOk;//false
+	}
+	if (l_zOk) 
+	{
+		strcpy(l_Key,p_pcFeature);
+		strcat(l_Key,":");
+		strcat(l_Key,p_pcVersion);
+		l_pFeature = select_list(l_Key);
+		if (l_pFeature) 
+		{
+			l_zEntryAlreadyExists = 1;
+			l_zCreateJob = 0;
+			l_pLMJob = (LM_HANDLE *)l_pFeature->m_pJob;
+
+			if (l_pFeature->m_iNumLicenses > p_iNumLicenses)
+			{
+				l_zNeedToAcquire = 0;
+			}
+			if (!l_pLMJob)
+			{
+				l_zCreateJob = 1;
+			}
+		}
+	}
+
+	if (l_zOk && l_zCreateJob)
+	{
+		if (0 != lc_new_job(0,
+					lc_new_job_arg2,
+					&l_VendorCode,
+					&l_pLMJob))
+		{
+			l_zOk = 0;
+			printf("Can't acquire %d License of %s: lc_new_job failed\n",
+					p_iNumLicenses,
+					l_Key);
+		}
+		if (l_zOk)
+		{
+			if (!l_zEntryAlreadyExists)
+			{
+				l_pFeature = (struct LicenseItem *)malloc(sizeof(struct LicenseItem));
+				strcpy(l_pFeature->m_Feature,p_pcFeature);
+				strcpy(l_pFeature->m_Version,p_pcVersion);
+				l_pFeature->m_iNumLicenses = 0;
+				l_pFeature->m_pJob = 0;
+				l_pFeature->m_iDaysRemaining = LM_FOREVER;
+
+				m_pItem = l_pFeature;
+				/*	if(l_pFeature == NULL) {
+					printf("error : malloc struct LicenseItem\n");
+					exit(1)
+					}*/
+			}
+			l_pFeature->m_pJob = l_pLMJob;
+		}
+	}
+	if (l_zOk && (!l_pFeature || !l_pLMJob))
+	{
+		printf("Can't acquire license: Could not create job\n");
+		l_zOk = 0;
+	}
+	if (l_zOk && l_zNeedToAcquire)
+	{
+		(void)lc_set_attr(
+				l_pLMJob,
+				LM_A_LICENSE_DEFAULT,
+				(LM_A_VAL_TYPE)LICPATH
+				);
+		if (0 != lc_checkout(l_pLMJob,
+					(char *)p_pcFeature,
+					(char *)p_pcVersion,
+					p_iNumLicenses,
+					LM_CO_NOWAIT,
+					&l_VendorCode,
+					LM_DUP_NONE))
+		{
+			l_zOk = 0;
+			if (!p_zSilent)
+			{
+				printf(
+						"Can't acquire %d License of %s: checkout() failed:Reason:%s\n",
+						p_iNumLicenses,
+						l_Key,
+						lc_errstring(l_pLMJob)
+					  );
+			}
+		}
+	}
+	if (l_zOk)
+	{
+		l_pLMCfg = lc_get_config(l_pLMJob,(char *)p_pcFeature);
+		if (l_pLMCfg)
+		{
+			l_iDaysRemaining = lc_expire_days(l_pLMJob,l_pLMCfg);
+		}
+	}
+	if (!l_zOk)
+	{
+		if (!l_zEntryAlreadyExists)
+		{
+			if (l_pLMJob)
+			{
+				lc_free_job(l_pLMJob);
+			}
+			if (l_pFeature)
+			{
+				free(l_pFeature);
+			}
+		}
+		if (p_zTerminateOnFail)
+		{
+			free(l_pFeature);
+			exit(-1);
+		}
+	}
+	else
+	{
+		if (!l_zEntryAlreadyExists)
+		{
+			//add_list(0,l_Key,l_pFeature);//add list 
+		}
+		if (l_zNeedToAcquire)
+		{
+			l_pFeature->m_iNumLicenses = p_iNumLicenses;
+			l_pFeature->m_iDaysRemaining = l_iDaysRemaining;
+			add_list(0,l_Key,l_pFeature);//add list 
+			if (l_iDaysRemaining == LM_FOREVER)
+			{
+				printf("Acquired %d license for %s\n",
+						p_iNumLicenses,l_Key);
+			}
+			else
+			{
+				/*
+				   printf("Acquired %d license for %s,%d days remaining\n",
+				   p_iNumLicenses,l_Key,l_iDaysRemaining);	
+				   */
+			}
+		}
+	}
+
+	return l_zOk;
+}
+void release(const char *p_pcFeature,
+		const char *p_pcVersion)
+{
+	char l_zOk = 1;//true 
+	char l_Key[40] = {0};
+	struct LicenseItem *l_pFeature = NULL;
+	if (!p_pcFeature || !p_pcVersion)
+	{
+		l_zOk = 0;
+	}
+	if(l_zOk)
+	{
+		strcpy(l_Key,p_pcFeature);
+		strcat(l_Key,":");
+		strcat(l_Key,p_pcVersion);
+		l_pFeature = select_list(l_Key);
+	}
+	if (l_zOk && l_pFeature)
+	{
+		release_1(*l_pFeature,0);
+		//del_list(l_key)  /*0517这个应该加上*/
+	}
+}
+void release_1(struct LicenseItem p_Feature,char p_zSilent)
+{
+	if (p_Feature.m_pJob)
+	{
+		lc_checkin(
+				(LM_HANDLE *)p_Feature.m_pJob,
+				(char *)p_Feature.m_Feature,
+				1);
+		if (!p_zSilent)
+		{
+			/*
+			   printf("Released %d licenses for %s:%s\n",
+			   p_Feature.m_iNumLicenses,
+			   p_Feature.m_Feature,
+			   p_Feature.m_Version);
+			   */
+		}
+		lc_free_job((LM_HANDLE *)p_Feature.m_pJob);
+	}
+}
+
+//-----------libev
+char l_Key[40];//global -> handleTimeout
+
+void handleTimeout(struct ev_loop *main_loop,ev_timer *timer_w,int e)
+{
+	char l_zRestart = 1;//true
+	char l_zExpired = 0;
+	printf("-------\n");
+	m_pItem = select_list(l_Key);
+	if (m_pItem && m_pItem->m_pJob)
+	{
+		release_1(*m_pItem,0);  //------------------------------error
+		int l_iNumLicenses = m_pItem->m_iNumLicenses;
+		m_pItem->m_pJob = 0;
+		m_pItem->m_iDaysRemaining = LM_FOREVER;
+		m_pItem->m_iNumLicenses = 0;
+		char l_zAcquired = acquire(m_pItem->m_Feature,
+				l_iNumLicenses,
+				m_pItem->m_Version,
+				0,
+				0);
+		if (!l_zAcquired) l_zExpired = 1;
+
+	}
+	if (m_pItem && m_pItem->m_pJob)
+	{
+		if(m_pItem->m_iDaysRemaining == 0)
+		{
+			printf("License for %s expires today\n",m_pItem->m_Feature);
+			l_zExpired = 1;
+			l_zRestart = 0;
+		}
+		else if (m_pItem->m_iDaysRemaining == LM_FOREVER)
+		{
+			l_zRestart = 0;
+		}
+	}
+
+	if (l_zExpired)
+	{
+		ev_timer_stop(main_loop,timer_w);//add by zhang_lj 0429
+		printf("handleTimeout: Exiting due to license expiry getppid\n");
+		kill(getpid(),SIGUSR2);
+	}
+
+}
+ev_timer timer_w;
+struct ev_loop *main_loop;
+void run_lev(void)
+{
+	printf("run_lev: Start libev \n");
+	main_loop = ev_default_loop(0);
+	ev_init(&timer_w,handleTimeout);
+	ev_timer_set(&timer_w,0,10);
+	ev_timer_start(main_loop,&timer_w);
+	ev_run(main_loop,0);
+}
+
+char enableExpiryPoll(const char *p_pcFeature,
+		const char *p_pcVersion)
+{
+	char l_zOk = 1;//true
+	//char l_Key[40];
+	struct LicenseItem *l_pFeature = NULL;
+	if (!p_pcFeature || !p_pcVersion)
+	{
+		l_zOk = 0;
+	}
+	if(l_zOk)
+	{
+		memset(l_Key,0,sizeof(l_Key));//zu he qian qing 0
+		strcpy(l_Key,p_pcFeature);
+		strcat(l_Key,":");
+		strcat(l_Key,p_pcVersion);
+		l_pFeature = select_list(l_Key);
+		if (l_pFeature == NULL)
+			l_zOk = 0;
+	}
+
+	//printf("l_zOk : %x\n",l_zOk);	
+	//printf("l_pFeature : %x\n",l_pFeature);
+	printf("l_pFeature->m_iDaysRemaining : %x\n",l_pFeature->m_iDaysRemaining);
+	//printf("LM_FOREVER : %x\n",LM_FOREVER);
+	//printf("\n l_zOk : %x, l_pFeature : %x, l_pFeature->m_iDaysRemaining :%x, LM_FOREVER : %x\n",l_zOk,l_pFeature,l_pFeature->m_iDaysRemaining,LM_FOREVER);
+	if (l_zOk && l_pFeature && l_pFeature->m_iDaysRemaining != LM_FOREVER)
+	{
+		//printf("\n l_pFeature : %x \n",l_pFeature);
+		printf("enableExpiryPoll: Start polling license! \n");
+		run_lev();
+		free_list();
+	}
+	return l_zOk;
+}
+
